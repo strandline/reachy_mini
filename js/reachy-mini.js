@@ -82,6 +82,13 @@
  *                                          //                  `connect()` resolves and that robot appears online.
  *                                          //                  One-shot per page load; suits iframe-embedded apps
  *                                          //                  that want zero-tap entry from the host shell.
+ *                                          //                  IMPORTANT: call `attachVideo(<el>)` BEFORE
+ *                                          //                  `connect()` if you use this option. Otherwise the
+ *                                          //                  inbound video track arrives without a sink, the
+ *                                          //                  WebView decoder backs up, and the iframe shows a
+ *                                          //                  black <video>. `attachVideo` is lazy — it stores
+ *                                          //                  the element and binds when the track arrives, so
+ *                                          //                  calling it once at module load is sufficient.
  *   })
  *
  *
@@ -782,6 +789,9 @@ export class ReachyMini extends EventTarget {
                     this._iceConnected = true;
                     this._checkSessionReady();
                 } else if (s === 'failed') {
+                    // Terminal: ICE has given up after exhausting all
+                    // candidate pairs. Reject any pending startSession
+                    // and surface to consumers as an error.
                     const err = new Error('ICE connection failed');
                     if (this._sessionReject) {
                         this._sessionReject(err);
@@ -789,9 +799,23 @@ export class ReachyMini extends EventTarget {
                         this._sessionReject = null;
                     }
                     this._emit('error', { source: 'webrtc', error: err });
-                } else if (s === 'disconnected') {
-                    this._emit('error', { source: 'webrtc', error: new Error('ICE disconnected') });
                 }
+                // Note: `'disconnected'` is intentionally NOT treated as
+                // an error. Per the WebRTC spec it is a *transient*
+                // state (no STUN keep-alive ack seen for ~5 s) — the
+                // browser keeps trying and almost always recovers to
+                // `'connected'` on its own; only the terminal `'failed'`
+                // state means the link is actually gone. Surfacing
+                // `'disconnected'` as an error caused consumers (mobile
+                // shell, dev Spaces) to flash "connection lost" popups
+                // during routine WiFi blips while media kept flowing
+                // normally — see commit message for repro details.
+                //
+                // Consumers that want fine-grained ICE-state UI can
+                // attach their own `oniceconnectionstatechange`
+                // handler to `robot._pc` (we expose it as a read-only
+                // implementation detail) or watch for the eventual
+                // `'failed'` transition through the `error` event.
             };
 
             this._pc.ondatachannel = (e) => {
